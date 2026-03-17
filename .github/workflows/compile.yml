@@ -1,0 +1,65 @@
+name: Compile and Release CS2-Extra-Spawns
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Plugin
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump Version and Create Tag
+        id: tag_version
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+
+      - name: Setup .NET 8.0
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore Dependencies
+        run: dotnet restore CS2-Extra-Spawns.csproj
+
+      - name: Build and Publish
+        run: dotnet publish CS2-Extra-Spawns.csproj -c Release -o ./publish_temp
+
+      - name: Prepare Folder Structure
+        run: |
+          mkdir -p ./release_stage/addons/counterstrikesharp/plugins/CS2-Extra-Spawns
+          mv ./publish_temp/CS2-Extra-Spawns.dll ./release_stage/addons/counterstrikesharp/plugins/CS2-Extra-Spawns/
+          mv ./publish_temp/CS2-Extra-Spawns.pdb ./release_stage/addons/counterstrikesharp/plugins/CS2-Extra-Spawns/
+          mv ./publish_temp/CS2-Extra-Spawns*.json ./release_stage/addons/counterstrikesharp/plugins/CS2-Extra-Spawns/
+
+      - name: Zip Release Artifact
+        run: |
+          cd release_stage
+          zip -r "CS2-Extra-Spawns-${{ steps.tag_version.outputs.new_tag }}.zip" addons/
+
+      - name: Upload Build Artifact (Actions Tab)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CS2-Extra-Spawns-${{ steps.tag_version.outputs.new_tag }}
+          path: release_stage/CS2-Extra-Spawns-${{ steps.tag_version.outputs.new_tag }}.zip
+          retention-days: 7
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag_version.outputs.new_tag }}
+          files: release_stage/CS2-Extra-Spawns-${{ steps.tag_version.outputs.new_tag }}.zip
+          generate_release_notes: true
