@@ -21,14 +21,13 @@ namespace CS2_Extra_Spawns
 
         private const int MaxSpawnsPerTeam = 32;
 
-        // How far the offset pattern is allowed to expand outward (ring 1 = the
-        // original ±5 unit pattern, ring 2 = ±10, and so on). Replaces the previous
-        // accidental behavior where offsets chained off already-offset spawns,
-        // gaining +5 Z per generation and slowly drifting spawn points into the air.
+        // How far the offset pattern may expand outward (ring 1 = ±5 units,
+        // ring 2 = ±10, and so on). Offsets are always applied to the original map
+        // spawns, never to generated ones, so Z cannot accumulate across rounds.
         private const int MaxOffsetRings = 8;
 
         // Horizontal offset pattern. Z is handled separately and stays a constant
-        // +5 above the ORIGINAL spawn height for every ring.
+        // +5 above the original spawn height for every ring.
         private static readonly (float X, float Y)[] Offsets =
         {
             (5f, 0f),
@@ -50,9 +49,9 @@ namespace CS2_Extra_Spawns
 
         private CSTimer? _solidTeammatesTimer;
 
-        // True from the moment we set mp_solid_teammates to 0 until we've restored
-        // it. Guards the capture below so we can never record our own 0 as the
-        // server's "original" value.
+        // True from the moment mp_solid_teammates is set to 0 until it is restored.
+        // Stops OnRoundStart from recording the plugin's own 0 as the server's
+        // configured value.
         private bool _solidRestorePending = false;
         private int _originalSolidTeammates = 2;
 
@@ -80,9 +79,8 @@ namespace CS2_Extra_Spawns
 
         public override void Unload(bool hotReload)
         {
-            // If we're mid-window, put the cvar back before we disappear. Previously
-            // an unload inside the 5-second window left mp_solid_teammates at 0
-            // permanently.
+            // Unloading during the 5-second window would otherwise leave
+            // mp_solid_teammates at 0, so restore it here.
             if (_solidRestorePending)
             {
                 try { Server.ExecuteCommand($"mp_solid_teammates {_originalSolidTeammates}"); } catch { }
@@ -98,14 +96,14 @@ namespace CS2_Extra_Spawns
 
         private void OnMapStart(string map)
         {
-            // New map: the old snapshot is invalid.
+            // Spawn snapshots from the previous map no longer apply.
             foreach (var list in _originalSpawns.Values) list.Clear();
 
-            // Deliberately do NOT reset _solidRestorePending here. If the map changed
-            // inside the 5-second window, the restore timer was killed
-            // (STOP_ON_MAPCHANGE) and the cvar is STILL 0 — the pending flag is what
-            // makes the next round restore the true original instead of capturing
-            // that leftover 0 as the server's configured value.
+            // _solidRestorePending is intentionally not reset here. If the map changes
+            // during the 5-second window, the restore timer is killed
+            // (STOP_ON_MAPCHANGE) and the cvar is still 0. Keeping the flag set makes
+            // the next round restore the configured value instead of capturing that
+            // leftover 0.
 
             // Delay to let map entities load before first round
             AddTimer(1.0f, () =>
@@ -126,10 +124,9 @@ namespace CS2_Extra_Spawns
             AddExtraSpawns("info_player_terrorist");
             AddExtraSpawns("info_player_counterterrorist");
 
-            // Capture the server's real configured value BEFORE we touch it — but only
-            // if no restore is pending (if one is, the cvar currently holds our 0).
-            // Previously the restore hardcoded "2", silently overriding servers
-            // configured for 0 or 1 on every single round.
+            // Record the server's configured value before changing it, so the restore
+            // puts back whatever the server uses. Skipped while a restore is pending,
+            // because the cvar then still holds the plugin's 0.
             if (!_solidRestorePending)
             {
                 _originalSolidTeammates = ReadSolidTeammates() ?? _originalSolidTeammates;
@@ -161,8 +158,8 @@ namespace CS2_Extra_Spawns
             }
             catch
             {
-                // Cvar type mismatch or unavailable: fall back to the last known
-                // value (initially 2, matching the plugin's previous behavior).
+                // Cvar missing or of an unexpected type: the caller keeps the last
+                // known value (2 until a value has been read).
                 return null;
             }
         }
@@ -198,10 +195,10 @@ namespace CS2_Extra_Spawns
                 if (liveSpawns.Count == 0)
                     return 0;
 
-                // Lazy capture covers hot reloads mid-map, where OnMapStart never
-                // fired for this plugin instance. (In that case previously created
-                // dynamic spawns are captured as bases too — they're valid, in-bounds
-                // spawn positions, so that's acceptable.)
+                // Capturing here handles hot reloads mid-map, when OnMapStart never
+                // fired for this plugin instance. Any dynamic spawns that already
+                // exist are then captured as bases too, which is fine because they
+                // are valid, in-bounds positions.
                 CaptureOriginalSpawns(className);
                 var bases = _originalSpawns[className];
                 if (bases.Count == 0)
@@ -212,9 +209,8 @@ namespace CS2_Extra_Spawns
                     return 0;
 
                 // Positions that already have a spawn point, rounded to whole units.
-                // Skipping occupied candidates fixes the old stacking behavior where
-                // regenerated offsets landed exactly on surviving dynamic spawns,
-                // producing multiple spawn points at the identical position.
+                // Candidates that land on an occupied position are skipped, so
+                // regenerated offsets never stack on top of surviving dynamic spawns.
                 var occupied = new HashSet<(int, int, int)>();
                 foreach (var spawn in liveSpawns)
                 {
@@ -225,9 +221,9 @@ namespace CS2_Extra_Spawns
 
                 int created = 0;
 
-                // Ring 1 reproduces the original ±5 unit pattern exactly; further
-                // rings expand outward horizontally only, keeping Z at a constant +5
-                // above the original spawn height.
+                // Ring 1 is the ±5 unit pattern; each further ring pushes the offsets
+                // another 5 units outward horizontally. Z stays at a constant +5 above
+                // the original spawn height.
                 for (int ring = 1; ring <= MaxOffsetRings && created < needed; ring++)
                 {
                     foreach (var b in bases)
